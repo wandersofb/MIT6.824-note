@@ -8,4 +8,5 @@
 
 ## NOTE
 
-* [Page 2](note/page-2.md)
+* [Map Reduce](note/map-reduce.md)
+* [Google File System](note/page-2.md)
