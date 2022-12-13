@@ -9,4 +9,4 @@
 ## NOTE
 
 * [Map Reduce](note/map-reduce.md)
-* [Google File System](note/page-2.md)
+* [Google File System](note/google-file-system.md)
