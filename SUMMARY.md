@@ -10,3 +10,4 @@
 
 * [Map Reduce](note/map-reduce.md)
 * [Google File System](note/google-file-system.md)
+* [Fault-Tolerant Virtual Machines](note/fault-tolerant-virtual-machines.md)
