@@ -6,6 +6,7 @@
 
 * [Lab1](lab/lab1.md)
 * [Lab2A](lab/lab2a.md)
+* [Lab2B](lab/lab2b.md)
 
 ## NOTE
 
