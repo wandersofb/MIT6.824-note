@@ -2,9 +2,10 @@
 
 第三部分是追加持久化操作，以使得我们的机器重启后可以恢复到之前的状态。还需要一个优化，就是快速 backup，换句话说就是当我们发送 AppendEntries RPC 时所做的一致性检查发生失败时，不再是后跳到下一位，我们要迅速的 backup。
 
-具体细节看这里的[指导](https://thesquareplanet.com/blog/students-guide-to-raft/#an-aside-on-optimizations)和上课时的[笔记](http://nil.csail.mit.edu/6.824/2022/notes/l-raft2.txt)。由于这次的代码很少，但是却有更大的压力测试，2B 未实现的细节和犯的错，在 2C 这里都会暴露无遗，细心读指导的和笔记，慢慢追加代码，慢慢减少错误，慢慢排除边缘条件，就可以了。
+具体细节看这里的[指导](https://thesquareplanet.com/blog/students-guide-to-raft/#an-aside-on-optimizations)和上课时的[笔记](http://nil.csail.mit.edu/6.824/2022/notes/l-raft2.txt)。由于这次要写的代码很少，但是却有更大的压力测试，所以大部分都是调 bug，2B 未实现的细节和犯的错，在 2C 这里都会暴露无遗，细心读指导和笔记，慢慢追加代码，慢慢减少错误，慢慢排除边缘条件，就可以了。
 
 测试的时候要 1000 次不出错，就算是通过实验了，我的错误大部分要么几次测试就出现的明显错误和几百次出现的隐藏错误。
+
 ![](../.gitbook/assets/2B&2C.png)
 
 以下是 hints。

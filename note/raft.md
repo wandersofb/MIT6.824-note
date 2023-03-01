@@ -166,9 +166,9 @@ $ broadcastTime \ll electionTimeou \ll MTBF $
 
 广播时间和 MTBF 是底层系统的属性，而选举超时是我们必须选择的。Raft 的 RPC 通常要求接收者将信息持久化到稳定的存储中，所以广播时间可能在 0.5ms 到 20ms 之间，这取决于存储技术。因此，选举超时可能是在 10ms 到 500ms 之间。典型的服务器MTBF 是几个月或更长时间，这很容易满足时间要求。
 
-### 6 Cluster membership changes
+## 6 Cluster membership changes
 
-### 7 Log compaction
+## 7 Log compaction
 
 Raft 的日志在正常操作期间会增长以包含更多客户端请求，但在实际系统中，它不能无限制地增长。随着日志变长，它会占用更多空间并需要更多时间来重播。这最终会导致可用性问题，而没有某种机制来丢弃日志中累积的过时信息。
 
