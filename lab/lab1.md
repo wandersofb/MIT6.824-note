@@ -14,6 +14,7 @@ MapReduce 从架构上是一种客户端服务器架构，他有两个重要进�
 其中 map 和 reduce 则是解决问题的主要逻辑，map 是形成 key-value 的过程，并且把这些 kv 存储在中间文件。reduce 则是聚合相同的 key ，使 value 按照提出的逻辑处理。
 
 ## hints
+
 补充一下 lab 页没给到但是我觉得还挺重要的提示。
 
 ### worker

@@ -1,125 +1,254 @@
 # ZooKeeper: Wait-free coordination for Internet-scale systems
 
-## abstract
+## Abstract
 
-在本文中，我们描述了 ZooKeeper，一种用于协调分布式应用程序进程的服务。由于 ZooKeeper 是关键基础设施的一部分，因此ZooKeeper 旨在提供一个简单和高性能的内核，以便在客户端构建更复杂的协调原语。它将来自组消息传递、共享寄存器和分布式锁服务的元素合并到一个复制的集中式服务中。ZooKeeper 公开的接口具有共享寄存器的免等待方面，具有类似于分布式文件系统缓存失效的事件驱动机制，以提供简单而强大的协调服务。
+在这篇论文中，我们描述了 ZooKeeper，这是一个用于协调分布式应用程序进程的服务。由于 ZooKeeper 是关键基础设施的一部分，它旨在为客户端构建更复杂的协调原语提供一个简单且高性能的核心。它将来自组群消息传递、共享寄存器以及分布式锁服务的元素融入到一个复制的、集中式的服务中。ZooKeeper 所暴露的接口具有共享寄存器的无等待特性，并采用类似于分布式文件系统的缓存失效的事件驱动机制，以提供一个简单而强大的协调服务。
 
-ZooKeeper 接口支持高性能服务实现。除了免等待属性之外，ZooKeeper 还提供每个客户端的请求 FIFO 执行保证，并为更改 ZooKeeper 状态的所有请求提供线性化保证。这些设计决策支持实现高性能处理管道，本地服务器满足读取请求。我们展示了目标工作负载，2：1 到 100：1 的读写比率，ZooKeeper 每秒可以处理数万到数十万个事务。此性能允许客户端应用程序广泛使用 ZooKeeper。
+ZooKeeper 的接口实现了高性能的服务。除了无等待特性之外，ZooKeeper 为每个客户端提供了请求的 FIFO 执行保证，并对所有改变 ZooKeeper 状态的请求提供了线性一致性。这些设计决策使得可以实现一个高性能的处理管道，其中读请求由本地服务器满足。我们展示了对于目标工作负载（读写比为 2:1 到 100:1），ZooKeeper 可以处理每秒数万到数十万的事务。这种性能使得 ZooKeeper 可以被客户端应用广泛使用。
 
 ## 1 Introduction
 
-大规模分布式应用程序需要不同形式的协调。配置是最基本的协调形式之一。在最简单的形式中，配置只是系统进程的操作参数列表，而更复杂的系统具有动态配置参数。组成员资格和领导者选举在分布式系统中也很常见：进程通常需要知道哪些其他进程是活动的，以及这些进程负责什么。锁构成了一个强大的协调原语，可实现对关键资源的互斥访问。
+大规模分布式应用程序需要不同形式的协调。配置是其中最基本的形式之一。在其最简单的形式中，配置只是系统进程的操作参数列表，而更复杂的系统具有动态配置参数。组成员身份和领导选举在分布式系统中也很常见：通常，进程需要知道哪些其他进程是活动的，以及这些进程负责什么。锁构成了一个强大的协调原语，实现对关键资源的互斥访问。
 
-协调的一种办法是为每种不同的协调需要开发服务。例如，Amazon Simple Queue Service [3] 专门关注队列。其他服务是专门为领导者选举[25]和配置[27]开发的。实现功能更强大的原语的服务可用于实现功能较弱的原语。例如，Chubby [6] 是一个具有强大同步保证的锁定服务。然后可以使用锁来实现领导者选举、组成员资格等。
+一种协调的方法是为不同的协调需求开发专门的服务。例如，Amazon Simple Queue Service [3] 专注于队列。其他服务专门用于领导选举 [25] 和配置 [27]。实现更强大原语的服务可以用于实现较弱的原语。例如，Chubby [6] 是一个具有强同步保证的锁定服务。然后可以使用锁来实现领导选举、组成员身份等。
 
-在设计协调服务时，我们不再在服务器端实现特定的原语，而是选择公开一个 API，使应用程序开发人员能够实现自己的原语。这样的选择导致了协调内核的实现，该内核支持新的原语，而无需更改服务核心。此方法支持多种形式的协调，以适应应用程序的要求，而不是将开发人员限制在一组固定的原语上。
+在设计我们的协调服务时，我们远离在服务器端实现特定的原语，而选择暴露一个API，使应用程序开发人员能够实现自己的原语。这样的选择导致了协调核心的实现，它可以在不需要更改服务核心的情况下支持新的原语。这种方法支持多种适应应用程序要求的协调形式，而不是将开发人员限制在一组固定的原语中。
 
-在设计 ZooKeeper 的 API 时，我们不再使用阻塞原语，例如锁。除其他问题外，阻止协调服务的原语可能会导致客户端速度慢或出现故障，从而对速度较快的客户端的性能产生负面影响。如果处理请求依赖于其他客户端的响应和故障检测，则服务本身的实现将变得更加复杂。因此，我们的系统 Zookeeper 实现了一个API，可以操作简单的无等待数据对象，这些对象按文件系统中的分层组织。事实上，ZooKeeper API 类似于任何其他文件系统的 API，仅从 API 签名来看，ZooKeeper 似乎很胖，没有锁定方法，打开和关闭。然而，实现免等待数据对象使 ZooKeeper 与基于阻塞原语（如锁）的系统显着区别开来。
+在设计 ZooKeeper 的 API 时，我们远离了阻塞原语，比如锁。对于协调服务来说，阻塞原语可能会导致诸如慢速或故障客户端对更快客户端的性能产生负面影响，除此之外，如果处理请求依赖于其他客户端的响应和故障检测，服务本身的实现也会变得更加复杂。因此，我们的系统 ZooKeeper 实现了一个API，该 API 操作简单的无等待数据对象，这些对象以类似文件系统的层次结构组织。实际上，ZooKeeper 的 API 类似于任何其他文件系统的 API，仅仅通过 API 的签名，ZooKeeper 似乎就是 Chubby 去掉了锁方法、open 和 close 的版本。然而，实现无等待数据对象使 ZooKeeper 在很大程度上有别于基于阻塞原语（如锁）的系统。
 
-尽管免等待属性对于性能和容错很重要，但它不足以进行协调。我们还必须为操作提供顺序保证。特别是，我们发现，保证所有操作的 FIFO 客户端排序和可线性化写入可以有效地实现服务，并且足以实现我们应用程序感兴趣的协调原语。事实上，我们可以使用我们的 API 为任意数量的进程实现共识，并且根据 Herlihy的层次结构，ZooKeeper 实现了一个通用对象[14]。
+尽管无等待特性对于性能和容错至关重要，但它对于协调来说并不足够。我们还必须为操作提供顺序保证。特别是，我们发现保证所有操作的 FIFO 客户端排序和可线性化写入，能够实现服务的高效实现，足以实现我们应用程序中感兴趣的协调原语。实际上，我们可以使用我们的 API 为任意数量的进程实现共识，并根据 Herlihy 的层次结构，ZooKeeper 实现了一个通用对象 [14]。
 
-ZooKeeper 服务由一组服务器组成，这些服务器使用复制来实现高可用性和性能。它的高性能使包含大量进程的应用程序能够使用这样的协调内核来管理协调的各个方面。我们能够使用简单的流水线架构实现 ZooKeeper，该架构允许我们有数百或数千个未完成的请求，同时仍然实现低延迟。这样的管道自然允许按 FIFO 顺序从单个客户端执行操作。保证 FIFO 客户端顺序使客户端能够异步提交操作。使用异步操作，客户端能够一次具有多个未完成的操作。此功能是可取的，例如，当新客户端成为领导者并且它必须操作元数据并相应地更新它时。如果没有多个未完成操作的可能性，初始化时间可以是秒的数量级，而不是亚秒级。
+ZooKeeper 服务包括一组使用复制实现高可用性和性能的服务器。其高性能使得包含大量进程的应用程序能够使用这样一个协调核心来管理协调的所有方面。我们能够通过使用简单的流水线架构来实现 ZooKeeper，这使得我们能够同时处理数百或数千个未完成的请求，同时仍然实现低延迟。这样的流水线自然地使得能够按照 FIFO 顺序执行来自单个客户端的操作。保证 FIFO 客户端顺序使得客户端能够异步提交操作。通过异步操作，客户端能够同时拥有多个未完成的操作。例如，在新客户端成为领导者并需要操作元数据并相应更新时，这种特性是可取的。如果没有多个未完成操作的可能性，初始化的时间可能会达到秒级而不是亚秒级。
 
-为了保证更新操作满足线性化，我们实现了一个基于领导者的原子广播协议[23]，称为Zab [24]。但是，ZooKeeper 应用程序的典型工作负载由读取操作主导，因此需要扩展读取吞吐量。在 ZooKeeper 中，服务器在本地处理读取操作，我们不会使用 Zab 来完全排序它们。
+为确保更新操作满足线性一致性，我们实现了一种基于领导者的原子广播协议 [23]，称为 Zab [24]。然而，ZooKeeper 应用程序的典型工作负载主要由读操作组成，因此希望能够扩展读吞吐量。在 ZooKeeper 中，服务器本地处理读操作，我们不使用 Zab 对它们进行完全排序。
 
-在客户端缓存数据是提高读取性能的重要技术。例如，对于进程来说，缓存当前领导者的标识符而不是每次需要知道领导者时都探测 ZooKeeper 很有用。ZooKeeper 使用监视机制使客户端能够缓存数据，而无需直接管理客户端缓存。使用此机制，客户端可以监视给定数据对象的更新，并在更新时接收通知。Chubby 直接管理客户端缓存。它阻止更新以使缓存正在更改的数据的所有客户端的缓存失效。在此设计下，如果这些客户端中的任何一个运行缓慢或有故障，则更新将延迟。Chubby 使用租约来防止有故障的客户端无限期地阻塞系统。然而，租约只约束缓慢或有故障的客户端的影响，而 ZooKeeper 监视完全避免了这个问题。
+在客户端缓存数据是提高读操作性能的重要技术。例如，一个进程可以缓存当前领导者的标识符，而不是每次需要知道领导者时都要查询 ZooKeeper。ZooKeeper 使用观察机制使客户端能够在不直接管理客户端缓存的情况下缓存数据。通过这种机制，客户端可以观察给定数据对象的更新，并在更新时收到通知。Chubby 则直接管理客户端缓存。它阻止更新以使所有缓存被更改的客户端的缓存无效。在这种设计下，如果其中任何一个客户端速度慢或出现故障，更新就会被延迟。Chubby 使用租约来防止故障客户端无限期地阻塞系统。然而，租约只能限制慢速或有故障的客户端的影响，而 ZooKeeper 的观察机制则完全避免了这个问题。
 
-在本文中，我们将讨论 ZooKeeper 的设计和实现。使用 ZooKeeper，我们能够实现应用程序所需的所有协调原语，即使只有写入是线性化的。为了验证我们的方法，我们展示了如何使用 ZooKeeper 实现一些协调原语。
+在这篇论文中，我们讨论了 ZooKeeper 的设计和实现。通过 ZooKeeper，我们能够实现我们应用程序所需的所有协调原语，尽管只有写操作是可线性化的。为了验证我们的方法，我们展示了如何使用 ZooKeeper 实现一些协调原语。
 
-总而言之，在本文中，我们的主要贡献是： 
-
-**协调内核：** 我们提出了一种无等待的协调服务，具有宽松的一致性保证，用于分布式系统。特别是，我们描述了协调内核的设计和实现，我们已经在许多关键应用程序中使用它来实现各种协调技术。
- 
-**协调配方：** 我们展示了如何使用 ZooKeeper 来构建更高级别的协调原语，甚至是通常用于分布式应用程序的阻塞和强一致性原语。
-
-**协调经验：** 我们分享了我们使用 ZooKeeper 的一些方法并评估其性能。
+总结一下，在这篇论文中我们的主要贡献有：
+1. **协调核心：** 我们提出了一种无等待的协调服务，提供了用于分布式系统的松散一致性保证。具体而言，我们描述了我们设计和实现的协调核心，该核心已在许多关键应用程序中用于实现各种协调技术。
+2. **协调配方：** 我们展示了如何使用 ZooKeeper 构建更高级别的协调原语，甚至包括在分布式应用程序中经常使用的阻塞和强一致性原语。
+3. **协调经验：** 我们分享了一些我们如何使用 ZooKeeper 以及评估其性能的经验。
 
 ## 2 The ZooKeeper service
 
+客户端通过使用 ZooKeeper 客户端库向 ZooKeeper 提交请求，使用客户端 API。除了通过客户端 API 暴露 ZooKeeper 服务接口之外，客户端库还负责管理客户端与 ZooKeeper 服务器之间的网络连接。
+
+在本节中，我们首先提供 ZooKeeper 服务的高层次视图。然后，我们讨论客户端用于与 ZooKeeper 交互的 API。
+ 
+术语。在本文中，我们使用“客户端”表示 ZooKeeper 服务的用户，“服务器”表示提供 ZooKeeper 服务的进程，使用“znode”表示 ZooKeeper 数据中的内存数据节点，它是以层次结构组织的命名空间，被称为数据树。我们还使用术语“更新”和“写入”来指代修改数据树状态的任何操作。客户端在连接到 ZooKeeper 时建立会话，并通过会话句柄发出请求。
+
+### 2.1 Service overview
+
+ZooKeeper 为其客户端提供了一组数据节点（znodes）的抽象，按照层次化的命名空间组织。该层次结构中的 znodes 是客户端通过 ZooKeeper API 操纵的数据对象。层次化命名空间在文件系统中常被使用。这是组织数据对象的一种可取的方式，因为用户习惯了这种抽象，并且它能更好地组织应用程序元数据。为了引用给定的 znode，我们使用标准的 UNIX 文件系统路径表示法。例如，我们使用 /A/B/C 来表示到 znode C 的路径，其中 C 的父节点是 B，B 的父节点是 A。所有 znodes 都存储数据，除了临时 znodes 外，所有 znodes 都可以有子节点。
+
+有两种类型的 znodes 可以由客户端创建：
+1. **常规（Regular）：** 客户端通过显式创建和删除来操作常规 znodes；
+2. **临时（Ephemeral）：** 客户端创建这样的 znodes，它们可以通过显式删除或者在创建它们的会话终止时（无论是故意还是由于故障）由系统自动删除。
+
+此外，当创建一个新的 znode 时，客户端可以设置一个序列标志。设置了序列标志的节点，其名称将附加一个单调递增的计数器值。如果 n 是新的 znode，p 是父 znode，那么 n 的序列值永远不会小于在 p 下创建的任何其他序列 znode 名称中的值。
+
+ZooKeeper 实现了观察机制，允许客户端在不需要轮询的情况下及时接收到更改的通知。当客户端发出一个带有观察标志的读操作时，该操作会像正常完成一样，但服务器承诺在返回的信息发生更改时通知客户端。观察是与会话关联的一次性触发器；它们在触发一次或会话关闭时注销。观察表示发生了变化，但不提供具体的变化内容。例如，如果客户端在“/foo”更改两次之前发出了 getData(''/foo'', true) 请求，客户端将收到一个观察事件，告诉客户端“/foo”的数据已更改。会话事件，如连接丢失事件，也会发送到观察回调，以便客户端知道观察事件可能会被延迟。
+
+ZooKeeper 的数据模型本质上是一个带有简化 API 的文件系统，只支持完整数据的读写，或者说是一个具有层次结构键的键值表。层次结构的命名空间对于为不同应用程序的命名空间分配子树以及为这些子树设置访问权限非常有用。我们还在客户端利用目录的概念来构建更高级别的原语，如我们将在第 2.4 节中看到的那样。
+
+与文件系统中的文件不同，znodes 并不是为一般的数据存储而设计的。相反，znodes 映射到客户端应用程序的抽象，通常对应于用于协调目的的元数据。为了说明，如图 1 所示，我们有两个子树，一个用于 Application 1（/app1），另一个用于 Application 2（/app2）。Application 1 的子树实现了一个简单的组成员协议：每个客户端进程 pi 在 /app1 下创建一个 znode pi，该 znode在进程运行时持久存在。
+
+![](../.gitbook/assets/Illustration%20of%20ZooKeeper%20hierarchical%20name.png)
+
+虽然 znodes 并不是为一般的数据存储而设计的，但 ZooKeeper 允许客户端存储一些信息，这些信息可用于在分布式计算中进行元数据或配置。例如，在基于领导者的应用程序中，对于刚刚启动的应用程序服务器来说，了解当前的领导者是哪个服务器是很有用的。为了实现这个目标，我们可以让当前的领导者将这些信息写入 znode 空间的已知位置。Znodes 还具有与时间戳和版本计数器相关联的元数据，允许客户端跟踪对 znodes 的更改，并根据 znode 的版本执行条件更新。
+
+会话。客户端连接到 ZooKeeper 并启动一个会话。会话有一个关联的超时时间。如果 ZooKeeper 在会话超时时间内未从客户端收到任何信息，就会认为客户端存在故障。会话在客户端显式关闭会话句柄或 ZooKeeper 检测到客户端故障时结束。在一个会话中，客户端观察到一系列状态更改，反映了其操作的执行。会话使客户端能够在 ZooKeeper 集群中透明地从一个服务器切换到另一个服务器，因此在 ZooKeeper 服务器之间持久存在。
+
+### 2.2 Client API
+
+我们在下面介绍 ZooKeeper API 的一个相关子集，并讨论每个请求的语义：
+
+1. **create(path, data, flags):** 创建一个名为 path 的 znode，将数据存储在其中，并返回新 znode 的名称。flags 使客户端能够选择 znode 的类型：常规、临时，并设置序列标志。
+
+2. **delete(path, version):** 如果 znode 在预期的版本上，则删除路径为 path 的 znode。
+
+3. **exists(path, watch):** 如果路径为 path 的 znode 存在，则返回 true，否则返回 false。watch 标志使客户端能够在 znode 上设置观察。
+
+4. **getData(path, watch):** 返回与 znode 相关联的数据和元数据（例如版本信息）。watch 标志的工作方式与 exists() 相同，只是如果 znode 不存在，ZooKeeper 不会设置观察。
+
+5. **setData(path, data, version):** 如果版本号是 znode 的当前版本，则将数据写入 znode path。
+
+6. **getChildren(path, watch):** 返回 znode 的子节点集合的名称。
+
+7. **sync(path):** 等待操作开始时待传播到客户端连接的服务器上的所有更新。目前忽略路径。
+
+以上是 ZooKeeper API 的一部分，每个请求的语义都有相应的解释。
+
+所有方法都在 API 中提供了同步和异步两个版本。当应用程序需要执行单个 ZooKeeper 操作且没有并发任务需要执行时，它使用同步 API，因此它调用必要的 ZooKeeper 操作并阻塞。然而，异步 API 使应用程序能够同时拥有多个未完成的 ZooKeeper 操作和其他并行执行的任务。ZooKeeper 客户端保证每个操作的相应回调按顺序调用。
+
+请注意，ZooKeeper 不使用句柄来访问 znodes。相反，每个请求都包括正在操作的 znode 的完整路径。这种选择不仅简化了 API（没有 open() 或 close() 方法），而且还消除了服务器需要维护的额外状态。
+
+每个更新方法都接受一个预期版本号，这使得实现条件更新成为可能。如果 znode 的实际版本号与预期版本号不匹配，更新将失败并显示意外版本错误。如果版本号为 -1，则不进行版本检查。
+
+### 2.3 ZooKeeper guarantees
+
+ZooKeeper 具有两种基本的排序保证：
+
+1. **可线性化写入（Linearizable writes）：** 更新 ZooKeeper 状态的所有请求都是可串行化的并且遵守先前顺序。
+
+2. **FIFO客户端顺序（FIFO client order）：** 来自给定客户端的所有请求都按照客户端发送的顺序执行。
+
+请注意，我们对可线性化性的定义与 Herlihy 最初提出的定义不同，我们将其称为 A-线性化性（asynchronous linearizability）。在 Herlihy 对可线性化性的原始定义中，一个客户端一次只能有一个未完成的操作（一个客户端是一个线程）。在我们的定义中，我们允许客户端有多个未完成的操作，因此我们可以选择不为同一客户端的未完成操作保证任何特定的顺序，或者保证 FIFO 顺序。我们选择后者作为我们的属性。重要的是要观察到，对于可线性化对象成立的所有结果，对于 A-线性化对象也同样成立，因为满足 A-线性化性的系统也满足线性化性。由于只有更新请求是 A-线性化的，ZooKeeper 在每个副本上本地处理读取请求。这使得服务在添加服务器到系统时能够实现线性扩展。
+
+为了了解这两种保证是如何交互的，请考虑以下情景。一个由多个进程组成的系统选举一个领导来指挥工作进程。当一个新的领导接管系统时，它必须更改大量的配置参数，并在完成后通知其他进程。然后我们有两个重要的要求：
+- 当新的领导开始进行更改时，我们不希望其他进程开始使用正在更改的配置。
+- 如果新的领导在配置完全更新之前死亡，我们不希望进程使用这个部分配置。
+
+请注意，分布式锁，如 Chubby 提供的锁，对于第一个要求是有帮助的，但对于第二个要求是不够的。使用 ZooKeeper，新的领导者可以将一个路径指定为就绪 znode；只有当该 znode 存在时，其他进程才会使用配置。新的领导者通过删除 ready，更新各种配置 znodes，并创建 ready 来进行配置更改。所有这些更改都可以进行流水线处理并异步发出，以快速更新配置状态。尽管更改操作的延迟大约为 2 毫秒，但必须更新 5000 个不同 znodes 的新领导者如果按顺序发出请求，将需要 10 秒；通过异步发出请求，请求将不到一秒钟。由于有顺序保证，如果一个进程看到了 ready znode，它必须同时看到新领导者所做的所有配置更改。如果新的领导者在创建 ready znode 之前死亡，其他进程将知道配置尚未最终确定，并且不会使用它。
+
+上述方案仍然存在一个问题：如果一个进程在新领导者开始进行更改之前看到 ready 存在，然后在更改正在进行时开始读取配置。对于通知的顺序保证解决了这个问题：如果一个客户端正在观察更改，客户端将在看到系统的新状态之前看到通知事件。因此，如果读取 ready znode 的进程请求在该 znode 发生更改时得到通知，它将在读取任何新配置之前看到通知，通知客户端发生了更改。
+
+另一个问题可能出现在客户端除了 ZooKeeper 之外还有自己的通信渠道的情况下。例如，考虑两个客户端 A 和 B，在 ZooKeeper 中有一个共享配置并通过共享通信渠道进行通信。如果 A 在 ZooKeeper 中更改了共享配置并通过共享通信渠道告诉 B 有关更改，那么 B 在重新读取配置时期望看到更改。如果 B 的 ZooKeeper 副本稍微落后于 A 的副本，则可能无法看到新的配置。利用上述的保证，B 可以通过在重新读取配置之前发出写入来确保看到最新的信息。为了更有效地处理这种情况，ZooKeeper 提供了 `sync` 请求：在读取之前使用 `sync` 构成一个慢读。`sync` 导致服务器在处理读取时应用所有挂起的写请求，而无需进行完整写入的开销。这个原语在思路上类似于 ISIS 的 flush 原语。
+
+ZooKeeper 还具有以下两个生存性和持久性保证：如果 ZooKeeper 服务器的大多数是活动的并且在通信，服务将可用；如果 ZooKeeper 服务对更改请求成功响应，只要大多数服务器最终能够恢复，该更改将持续存在。
+
+### 2.4 Examples of primitives
+
+在本节中，我们将展示如何使用 ZooKeeper API 来实现更强大的基元。ZooKeeper 服务对这些更强大的基元一无所知，因为它们完全由客户端使用 ZooKeeper 客户端 API 实现。一些常见的基元，如组成员身份和配置管理，也是无等待的。对于其他基元，如会合，客户端需要等待事件。尽管 ZooKeeper 是无等待的，但我们可以使用 ZooKeeper 实现高效的阻塞基元。ZooKeeper 的排序保证允许对系统状态进行有效推理，而观察允许进行有效的等待。
+
+配置管理：ZooKeeper 可以用于在分布式应用程序中实现动态配置。在其最简单的形式中，配置存储在一个 znode（例如，zc）中。进程启动时使用 zc 的完整路径名。启动的进程通过设置 watch 标志为 true 读取 zc 来获取其配置。如果 zc 中的配置有更新，进程将收到通知并读取新配置，再次将 watch 标志设置为 true。
+
+请注意，在这个方案中，与大多数使用观察的方案一样，观察用于确保进程具有最新的信息。例如，如果一个正在观察 zc 的进程收到对 zc 的更改的通知，并在它可以为 zc 发出读取请求之前有三次更改，则该进程不会收到三次以上的通知事件。这不会影响进程的行为，因为这三个事件只是通知进程已经知道的信息：它对 zc 的信息已经过时。
+
+会合：在分布式系统中，有时预先不清楚最终的系统配置会是什么样子。例如，客户端可能想启动一个主进程和几个工作进程，但启动进程是由调度程序完成的，因此客户端无法预先知道地址和端口等信息，以便将它们提供给工作进程连接到主进程。我们使用 ZooKeeper 处理这种情况，使用一个称为 rendezvous（会合）的 znode，即 zr，它是由客户端创建的节点。客户端将 zr 的完整路径名作为主进程和工作进程的启动参数传递。当主进程启动时，它会用有关其正在使用的地址和端口的信息填充 zr。当工作进程启动时，它们带有设置为 true 的 watch 读取 zr。如果 zr 尚未填充，工作进程将等待在 zr 更新时收到通知。如果 zr 是一个短暂的节点，主进程和工作进程可以观察 zr 被删除并在客户端结束时自行清理。
+
+组成员身份：我们利用短暂节点来实现组成员身份。具体而言，我们利用短暂节点允许我们查看创建节点的会话状态的事实。我们首先指定一个 znode（例如，zg ）来表示组。当组的进程成员启动时，它在 zg 下创建一个短暂子 znode。如果每个进程具有唯一的名称或标识符，那么该名称将用作子 znode 的名称；否则，进程将使用 SEQUENTIAL 标志创建 znode 以获取唯一的名称分配。进程可以将进程信息放在子 znode 的数据中，例如进程使用的地址和端口。
+
+在 zg 下创建了子 znode 后，进程正常启动。它无需执行其他任何操作。如果进程失败或结束，表示它的 znode 在 zg 下会自动删除。
+
+进程可以通过简单地列出 zg 的子节点来获取组信息。如果进程想要监视组成员身份的变化，该进程可以将 watch 标志设置为 true，并在接收到更改通知时刷新组信息（始终将 watch 标志设置为 true）。
+
+简单锁定：虽然 ZooKeeper 不是锁服务，但它可以用于实现锁。使用 ZooKeeper 的应用程序通常使用适合其需求的同步原语，例如上面显示的原语。在这里，我们展示了如何使用 ZooKeeper 实现锁，以表明它可以实现各种一般的同步原语。
+
+最简单的锁实现使用“锁文件”。锁由一个 znode 表示。要获取锁，客户端尝试使用 EPHEMERAL 标志创建指定的 znode。如果创建成功，客户端持有锁。否则，客户端可以读取 znode，并设置 watch 标志以在当前领导者死亡时收到通知。客户端在死亡时或显式删除 znode 时释放锁。等待锁的其他客户端在观察到 znode 被删除后再次尝试获取锁。
+
+尽管这个简单的锁定协议有效，但它确实存在一些问题。首先，它受到了群效应的影响。如果有很多客户端等待获取锁，它们将在锁释放时争夺锁，即使只有一个客户端可以获取锁。其次，它仅实现排他锁。以下两个原语展示了如何克服这两个问题。
+
+没有群效应的简单锁定：我们定义一个锁 znode l 来实现这样的锁。直观地说，我们排列所有请求锁的客户端，每个客户端按照请求到达的顺序获取锁。因此，希望获取锁的客户端执行以下操作：
+
+```
+Lock
+1 n = create(l + “/lock-”, EPHEMERAL|SEQUENTIAL)
+2 C = getChildren(l, false)
+3 if n is lowest znode in C, exit
+4 p = znode in C ordered just before n
+5 if exists(p, true) wait for watch event
+6 goto 2
+
+Unlock
+1 delete(n)
+```
+
+在 Lock 的第 1 行使用 SEQUENTIAL 标志，将客户端尝试获取锁的顺序与所有其他尝试排序。如果客户端的 znode 在第 3 行具有最低的序列号，则客户端持有锁。否则，客户端将等待删除拥有锁或将在此客户端的 znode 之前接收锁的 znode。通过仅监视在客户端 znode 之前的 znode，我们避免了群效应，因为在释放锁或放弃锁请求时，只有一个进程会被唤醒。一旦客户端监视的 znode 消失，客户端必须检查它现在是否持有锁。 （之前的锁请求可能已被放弃，而仍有一个具有较低序列号的 znode 在等待或持有锁。）
+
+释放锁定就像删除表示锁请求的 znode n 一样简单。通过在创建时使用 EPHEMERAL 标志，崩溃的进程将自动清理任何锁请求或释放它们可能持有的任何锁。
+
+总之，这种锁定方案具有以下优点：
+1. 删除一个 znode 只会唤醒一个客户端，因为每个 znode 只被一个其他客户端监视，所以我们不会出现群效应；
+2. 没有轮询或超时；
+3. 由于我们实现了锁定的方式，通过浏览 ZooKeeper 数据，我们可以看到锁争用的数量，打破锁定并调试锁定问题。
+
+读/写锁定：为了实现读/写锁定，我们稍微更改锁定过程，并有单独的读锁定和写锁定过程。解锁过程与全局锁定情况相同。
+
+```
+Write Lock
+1 n = create(l + “/write-”, EPHEMERAL|SEQUENTIAL)
+2 C = getChildren(l, false)
+3 if n is lowest znode in C, exit
+4 p = znode in C ordered just before n
+5 if exists(p, true) wait for event
+6 goto 2
+
+Read Lock
+1 n = create(l + “/read-”, EPHEMERAL|SEQUENTIAL)
+2 C = getChildren(l, false)
+3 if no write znodes lower than n in C, exit
+4 p = write znode in C ordered just before n
+5 if exists(p, true) wait for event
+6 goto 3
+```
+
+这个锁定过程与先前的锁定略有不同。写锁定仅在命名上有所不同。由于读锁可能是共享的，因此第 3 行和第 4 行稍有不同，因为只有较早的写锁定 znode 阻止客户端获取读锁。当有几个客户端等待读锁并在删除具有较低序列号的 “write-” znode 时被通知时，可能会出现“群效应”；实际上，这是一种期望的行为，所有这些读取客户端都应该被释放，因为它们现在可能已经获得了锁。
+
+双屏障：双屏障使客户端能够同步计算的开始和结束。当足够多的进程（由屏障阈值定义）加入屏障时，进程开始它们的计算，并在完成后离开屏障。我们用一个称为 b 的 znode 在 ZooKeeper 中表示一个屏障。每个进程 p 在进入时通过创建 b 的子项 znode 向 b 注册，当准备离开时取消注册（删除子项）。当 b 的子项 znode 的数量超过屏障阈值时，进程可以进入屏障。当所有进程都删除了它们的子项时，进程可以离开屏障。我们使用监视器来高效等待满足进入和退出条件。为了进入，进程监视 b 的就绪子项的存在，该子项将由导致子项数量超过屏障阈值的进程创建。为了离开，进程监视特定的子项是否消失，并在该 znode 被移除后才检查退出条件。
+
+## 3 ZooKeeper Applications
+
+现在我们描述一些使用 ZooKeeper 的应用，并简要解释它们如何使用。我们以粗体显示每个示例的原语。
+
+The Fetching Service (FS) 使用 ZooKeeper 来管理配置元数据，尽管它还使用 ZooKeeper 进行主节点的选举（领导者选举）。主要优势包括从主节点故障中恢复、尽管存在故障仍能保证可用性，以及将客户端与服务器解耦，使它们能够通过仅从 ZooKeeper 中读取状态来将请求定向到健康的服务器。
+
+图 2 显示了一个用于 FS 的 ZooKeeper 服务器在三天内的读写流量。为了生成这个图表，我们在该时期内每秒钟计算操作的次数，每个点对应于该秒钟内的操作次数。我们观察到读取流量相对于写入流量要高得多。在速率高于每秒 1,000 次操作的时期，读写比在 10:1 到 100:1 之间变化。在这个工作负载中，读取操作包括 getData()、getChildren() 和 exists()，按照普遍性递增的顺序。
+
+![](../.gitbook/assets/Workload%20for%20one%20ZK%20server%20with%20the%20Fetching.png)
+
+Katta（17）是一个使用 ZooKeeper 进行协调的分布式索引器，它是一个非 Yahoo！的应用示例。Katta 通过分片来进行索引工作。主服务器将分片分配给从服务器并跟踪进度。从服务器可能会失败，因此主服务器必须在从服务器进出时重新分配负载。主服务器也可能失败，因此其他服务器必须准备好在发生故障时接管。Katta 使用 ZooKeeper 来跟踪从服务器和主服务器的状态（组成员资格），以及处理主服务器故障切换（领导选举）。Katta 还使用 ZooKeeper 来跟踪和传播将分片分配给从服务器的任务（配置管理）。
+
+Yahoo! Message Broker（YMB）是一个分布式发布-订阅系统。该系统管理成千上万个主题，客户端可以向这些主题发布消息并从中接收消息。为了提供可伸缩性，主题分布在一组服务器中。每个主题使用主备方案进行复制，确保将消息复制到两台机器以确保可靠的消息传递。YMB 的服务器采用共享无关的分布式架构，这使得协调对于正确的操作至关重要。YMB 使用 ZooKeeper 来管理主题的分发（配置元数据）、处理系统中机器的故障（故障检测和组成员资格），以及控制系统的操作。
+
+Figure 3 展示了 YMB 的一部分 znode 数据布局。每个代理域都有一个名为 `nodes` 的 znode，该 znode 具有构成 YMB 服务的每个活动服务器的临时 znode。每个 YMB 服务器在 `nodes` 下创建一个临时 znode，其中包含负载和状态信息，通过 ZooKeeper 提供组成员资格和状态信息。诸如 `shutdown` 和 `migration prohibited` 之类的节点由构成服务的所有服务器监视，并允许对 YMB 进行集中控制。`topics` 目录为 YMB 管理的每个主题都有一个子 znode。这些主题 znode 具有子 znode，指示每个主题的主服务器和备份服务器以及该主题的订阅者。主和备份服务器 znode 不仅允许服务器发现负责主题的服务器，而且还管理领导者选举和服务器崩溃。
+
+![](../.gitbook/assets/The%20layout%20of%20Yahoo!%20Message%20Broker%20(YMB).png)
+
+## 4 ZooKeeper Implementation
+
+ZooKeeper 实现高可用性的方式是在组成服务的每个服务器上复制 ZooKeeper 数据。我们假设服务器通过崩溃而发生故障，并且这样的故障服务器后来可能恢复。图 4 显示了 ZooKeeper 服务的高级组件。在接收到请求后，服务器准备执行它（请求处理器）。如果此类请求需要在服务器之间进行协调（写请求），则它们使用协议达成一致（原子广播的实现），最后服务器将更改提交到 ZooKeeper 数据库，该数据库在整个集群的所有服务器上进行完全复制。对于读请求，服务器只需读取本地数据库的状态并生成对请求的响应。
+
+![](../.gitbook/assets/The%20components%20of%20the%20ZooKeeper%20service.png)
+
+复制的数据库是一个包含整个数据树的内存数据库。树中的每个 znode 默认存储最多 1MB 的数据，但这个最大值是一个可以在特定情况下更改的配置参数。为了可恢复性，我们高效地将更新记录到磁盘，并在将其应用于内存数据库之前强制写入磁盘媒体。实际上，就像 Chubby [8] 一样，我们保留一个已提交操作的回放日志（在我们的情况下是预写式日志），并定期生成内存数据库的快照。
+
+每个 ZooKeeper 服务器都为客户端提供服务。客户端连接到一个服务器来提交其请求。正如我们之前注意到的那样，读请求是从每个服务器数据库的本地副本服务的。改变服务状态的请求，即写请求，是通过一种协议来处理的。
+
+作为协议的一部分，写请求被转发到一个称为领导者（leader）的单个服务器。其余的 ZooKeeper 服务器被称为追随者（followers），它们从领导者接收包含状态更改的消息提案，并就状态更改达成一致。
+
+### 4.1 Request Processor
+
+由于消息传递层是原子的，我们保证本地副本永远不会发散，尽管在任何时刻，某些服务器可能应用了比其他服务器更多的事务。与从客户端发送的请求不同，这些事务是幂等的。当领导者接收到写请求时，它计算写入时系统的状态，并将其转换为捕捉此新状态的事务。必须计算未来状态，因为可能有未应用到数据库的未完成事务。例如，如果客户端执行一个条件 setData，请求中的版本号与要更新的 znode 的未来版本号匹配，那么服务将生成一个包含新数据、新版本号和更新时间戳的 setDataTXN。如果发生错误，比如版本号不匹配或要更新的 znode 不存在，那么将生成一个 errorTXN。
+
+### 4.2 Atomic Broadcast
 
 
-## References
+所有更新 ZooKeeper 状态的请求都被转发到领导者。领导者执行请求并通过 Zab [24]（原子广播协议）将更改广播到 ZooKeeper 状态。接收客户端请求的服务器在交付相应的状态更改时向客户端响应。Zab 默认使用简单的多数法定人数来决定一个提案，因此 Zab 和 ZooKeeper 只能在大多数服务器正确的情况下工作（即，使用 2f + 1 个服务器我们可以容忍 f 个故障）。
 
-[1] M. Abd-El-Malek, G. R. Ganger, G. R. Goodson, M. K. Reiter,
-and J. J. Wylie. Fault-scalable byzantine fault-tolerant services.
-In SOSP ’05: Proceedings of the twentieth ACM symposium on
-Operating systems principles, pages 59–74, New York, NY, USA,
-2005. ACM.
-[2] M. Aguilera, A. Merchant, M. Shah, A. Veitch, and C. Karamanolis. Sinfonia: A new paradigm for building scalable distributed
-systems. In SOSP ’07: Proceedings of the 21st ACM symposium
-on Operating systems principles, New York, NY, 2007.
-[3] Amazon. Amazon simple queue service. http://aws.amazon.com/sqs/, 2008.
-[4] A. N. Bessani, E. P. Alchieri, M. Correia, and J. da Silva Fraga.
-Depspace: A byzantine fault-tolerant coordination service. In
-Proceedings of the 3rd ACM SIGOPS/EuroSys European Systems
-Conference - EuroSys 2008, Apr. 2008.
-[5] K. P. Birman. Replication and fault-tolerance in the ISIS system.
-In SOSP ’85: Proceedings of the 10th ACM symposium on Operating systems principles, New York, USA, 1985. ACM Press.
-[6] M. Burrows. The Chubby lock service for loosely-coupled distributed systems. In Proceedings of the 7th ACM/USENIX Symposium on Operating Systems Design and Implementation (OSDI),
-2006.
-[7] M. Castro and B. Liskov. Practical byzantine fault tolerance and
-proactive recovery. ACM Transactions on Computer Systems,
-20(4), 2002.
-[8] T. Chandra, R. Griesemer, and J. Redstone. Paxos made live: An
-engineering perspective. In Proceedings of the 26th annual ACM
-symposium on Principles of distributed computing (PODC), Aug.
-2007.
-[9] A. Clement, M. Kapritsos, S. Lee, Y. Wang, L. Alvisi, M. Dahlin,
-and T. Riche. UpRight cluster services. In Proceedings of the 22
-nd ACM Symposium on Operating Systems Principles (SOSP),
-Oct. 2009.
-[10] J. Cowling, D. Myers, B. Liskov, R. Rodrigues, and L. Shira. Hq
-replication: A hybrid quorum protocol for byzantine fault tolerance. In SOSP ’07: Proceedings of the 21st ACM symposium on
-Operating systems principles, New York, NY, USA, 2007.
-[11] G. DeCandia, D. Hastorun, M. Jampani, G. Kakulapati, A. Lakshman, A. Pilchin, S. Sivasubramanian, P. Vosshall, and W. Vogels. Dynamo: Amazons highly available key-value store. In
-SOSP ’07: Proceedings of the 21st ACM symposium on Operating systems principles, New York, NY, USA, 2007. ACM Press.
-[12] J. Gray, P. Helland, P. O’Neil, and D. Shasha. The dangers of
-replication and a solution. In Proceedings of SIGMOD ’96, pages
-173–182, New York, NY, USA, 1996. ACM.
-[13] A. Hastings. Distributed lock management in a transaction processing environment. In Proceedings of IEEE 9th Symposium on
-Reliable Distributed Systems, Oct. 1990.
-[14] M. Herlihy. Wait-free synchronization. ACM Transactions on
-Programming Languages and Systems, 13(1), 1991.
-[15] M. Herlihy and J. Wing. Linearizability: A correctness condition for concurrent objects. ACM Transactions on Programming
-Languages and Systems, 12(3), July 1990.
-[16] J. H. Howard, M. L. Kazar, S. G. Menees, D. A. Nichols,
-M. Satyanarayanan, R. N. Sidebotham, and M. J. West. Scale
-and performance in a distributed file system. ACM Trans. Comput. Syst., 6(1), 1988.
-[17] Katta. Katta - distribute lucene indexes in a grid. http://
-katta.wiki.sourceforge.net/, 2008.
-[18] R. Kotla, L. Alvisi, M. Dahlin, A. Clement, and E. Wong.
-Zyzzyva: speculative byzantine fault tolerance. SIGOPS Oper.
-Syst. Rev., 41(6):45–58, 2007.
-[19] N. P. Kronenberg, H. M. Levy, and W. D. Strecker. Vaxclusters (extended abstract): a closely-coupled distributed system.
-SIGOPS Oper. Syst. Rev., 19(5), 1985.
-[20] L. Lamport. The part-time parliament. ACM Transactions on
-Computer Systems, 16(2), May 1998.
-[21] J. MacCormick, N. Murphy, M. Najork, C. A. Thekkath, and
-L. Zhou. Boxwood: Abstractions as the foundation for storage
-infrastructure. In Proceedings of the 6th ACM/USENIX Symposium on Operating Systems Design and Implementation (OSDI),
-2004.
-[22] L. Moser, P. Melliar-Smith, D. Agarwal, R. Budhia, C. LingleyPapadopoulos, and T. Archambault. The totem system. In Proceedings of the 25th International Symposium on Fault-Tolerant
-Computing, June 1995.
-[23] S. Mullender, editor. Distributed Systems, 2nd edition. ACM
-Press, New York, NY, USA, 1993.
-[24] B. Reed and F. P. Junqueira. A simple totally ordered broadcast protocol. In LADIS ’08: Proceedings of the 2nd Workshop
-on Large-Scale Distributed Systems and Middleware, pages 1–6,
-New York, NY, USA, 2008. ACM.
-[25] N. Schiper and S. Toueg. A robust and lightweight stable leader
-election service for dynamic systems. In DSN, 2008.
-[26] F. B. Schneider. Implementing fault-tolerant services using the
-state machine approach: A tutorial. ACM Computing Surveys,
-22(4), 1990.
-[27] A. Sherman, P. A. Lisiecki, A. Berkheimer, and J. Wein. ACMS:
-The Akamai configuration management system. In NSDI, 2005.
-[28] A. Singh, P. Fonseca, P. Kuznetsov, R. Rodrigues, and P. Maniatis. Zeno: eventually consistent byzantine-fault tolerance.
-In NSDI’09: Proceedings of the 6th USENIX symposium on
-Networked systems design and implementation, pages 169–184,
-Berkeley, CA, USA, 2009. USENIX Association.
-[29] Y. J. Song, F. Junqueira, and B. Reed. BFT for the
-skeptics. http://www.net.t-labs.tu-berlin.de/
-˜petr/BFTW3/abstracts/talk-abstract.pdf.
-[30] R. van Renesse and K. Birman. Horus, a flexible group communication systems. Communications of the ACM, 39(16), Apr.
-1996.
-[31] R. van Renesse, K. Birman, M. Hayden, A. Vaysburd, and
-D. Karr. Building adaptive systems using ensemble. Software Practice and Experience, 28(5), July 1998.
+为了实现高吞吐量，ZooKeeper 试图保持请求处理管道的充分填充。它可能有成千上万个请求处于处理管道的不同部分。由于状态更改取决于先前状态更改的应用，因此 Zab 提供比常规原子广播更强的顺序保证。更具体地说，Zab 保证领导者广播的更改按照它们发送的顺序传递，并且在广播自己的更改之前，已建立的领导者会接收来自先前领导者的所有更改。
+
+有一些实现细节简化了我们的实现并提供了出色的性能。我们使用 TCP 作为传输协议，因此消息顺序由网络维护，这使我们能够简化我们的实现。我们使用由 Zab 选择的领导者作为 ZooKeeper 的领导者，以便创建事务的同一进程也提出它们。我们使用日志来跟踪建议，作为内存数据库的预写日志，这样我们就不必将消息写两次到磁盘。
+
+在正常操作期间，Zab 确实按顺序且仅一次地传递所有消息，但由于 Zab 没有持久记录已传递的每条消息的 ID，在恢复期间 Zab 可能会重新传递一条消息。由于我们使用幂等事务，多次传递是可以接受的，只要它们按顺序传递。实际上，ZooKeeper 要求 Zab 至少重新传递在最后一个快照开始后传递的所有消息。
+
+### 4.3 Replicated Database
+
+每个副本都在内存中保存着 ZooKeeper 的状态副本。当 ZooKeeper 服务器从崩溃中恢复时，它需要恢复这个内部状态。重新播放所有已传递的消息以恢复状态在运行了一段时间后会花费很长时间，因此 ZooKeeper 使用定期的快照，并且只需要重新传递自快照开始以来的消息。我们称 ZooKeeper 快照为模糊快照，因为我们在获取快照时没有锁定 ZooKeeper 状态；相反，我们对树进行深度优先扫描，原子地读取每个 znode 的数据和元数据，并将它们写入磁盘。由于生成快照的过程中可能应用了传递的状态更改的某个子集，因此结果可能不对应于 ZooKeeper 在任何时间点的状态。然而，由于状态更改是幂等的，只要按顺序应用状态更改，我们可以多次应用它们。
+
+例如，假设在 ZooKeeper 数据树中，两个节点 `/foo` 和 `/goo` 分别具有值 `f1` 和 `g1`，两者的版本都为1，并且在模糊快照开始时，以下状态更改流到达，其形式为 `htransactionType, path, value, new-versioni`：
+
+```
+hSetDataTXN, /foo, f2, 2i
+hSetDataTXN, /goo, g2, 2i
+hSetDataTXN, /foo, f3, 3i
+```
+
+这里，`hSetDataTXN` 是设置数据的事务类型，`/foo` 和 `/goo` 是节点路径，`f2`、`g2` 和 `f3` 是相应节点的新值，`2i` 和 `3i` 是它们的新版本。
+
+在处理这些状态更改后，/foo 和 /goo 的值分别为 f3 和 g2，版本分别为 3 和 2。然而，模糊快照可能记录了 /foo 和 /goo 具有值 f3 和 g1，版本分别为 3 和 1，这不是 ZooKeeper 数据树的有效状态。如果服务器崩溃并使用此快照进行恢复，并且 Zab 重新传递状态更改，那么最终的状态对应于崩溃之前的服务状态。
+
+### 4.4 Client-Server Interactions
+
+当服务器处理写请求时，它还会发送并清除与该更新对应的任何监视器相关的通知。服务器按顺序处理写操作，不会同时处理其他写操作或读操作。这确保了通知的严格顺序。请注意，服务器在本地处理通知。只有客户端连接到的服务器会跟踪并触发该客户端的通知。
+
+读请求在每个服务器上本地处理。每个读请求都会被处理，并标记有一个与服务器看到的最后一个事务对应的 zxid。这个 zxid 定义了读请求相对于写请求的部分顺序。通过在本地处理读取请求，我们获得了出色的读取性能，因为它只是在本地服务器上的内存操作，没有磁盘活动或协议协商。这个设计选择是实现我们在读占主导地位的工作负载下实现卓越性能的关键。
+
+使用快速读取的一个缺点是不能保证读操作的优先顺序。也就是说，读操作可能返回旧值，尽管对同一 znode 的更新已经被提交。并非我们所有的应用程序都需要优先顺序，但对于需要的应用程序，我们已经实现了 sync。这个原语异步执行，并且在 leader 处理完本地副本的所有待处理写操作后进行排序。为了确保给定的读操作返回最新的更新值，客户端在读操作之前调用 sync。客户端操作的 FIFO 顺序保证，加上 sync 的全局保证，使得读操作的结果能够反映在发出 sync 之前发生的任何更改。在我们的实现中，我们不需要像使用基于领导者的算法，因此不需要原子广播 sync。我们只需将 sync 操作放在领导者和执行 sync 调用的服务器之间的请求队列的末尾。为了使这个工作，跟随者必须确保领导者仍然是领导者。如果有待处理的事务提交，那么服务器就不会怀疑领导者。如果待处理队列为空，领导者需要发出一个空事务以进行提交，并在该事务之后排序 sync。这有一个很好的属性，即当领导者负载过大时，不会生成额外的广播流量。在我们的实现中，设置超时时间使得领导者在跟随者放弃它们之前就意识到它们不再是领导者，因此我们不会发出空事务。
+
+ZooKeeper 服务器按照 FIFO 顺序处理来自客户端的请求。响应包括响应相对于的 zxid。即使在没有活动的间隔期间，心跳消息也包括客户端连接到的服务器最后看到的 zxid。如果客户端连接到一个新的服务器，新的服务器通过检查客户端的最后 zxid 是否比它的最后 zxid 更为最新，来确保它对 ZooKeeper 数据的视图至少与客户端的视图一样更新。如果客户端的视图比服务器的更为最新，服务器不会重新与客户端建立会话，直到服务器赶上。客户端可以确保能够找到另一台具有系统最新视图的服务器，因为客户端只看到已经复制到大多数 ZooKeeper 服务器的更改。这种行为对于保证耐久性是重要的。
+
+为了检测客户端会话故障，ZooKeeper 使用超时。如果在会话超时内没有其他服务器从客户端会话接收到任何消息，领导者将确定发生了故障。如果客户端频繁发送请求，那么就不需要发送任何其他消息。否则，客户端在低活动期间发送心跳消息。如果客户端无法与服务器通信以发送请求或心跳，则连接到另一台 ZooKeeper 服务器重新建立其会话。为了防止会话超时，ZooKeeper 客户端库在会话空闲 3 毫秒后发送心跳，并在 2 倍会话超时时间（2s=3 ms）内未从服务器收到消息时切换到新的服务器，其中 s 是以毫秒为单位的会话超时时间。
+
