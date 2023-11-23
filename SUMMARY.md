@@ -15,4 +15,4 @@
 * [Google File System](note/google-file-system.md)
 * [Fault-Tolerant Virtual Machines](note/fault-tolerant-virtual-machines.md)
 * [Raft](note/raft.md)
-* [ZooKeeper](note/ZooKeeper.md)
+* [ZooKeeper](note/zookeeper.md)
